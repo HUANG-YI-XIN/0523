@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>BMI 與跑步機訓練計畫產生器</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f7f7f7; }
+        .container { background: #fff; padding: 30px; border-radius: 10px; max-width: 500px; margin: auto; box-shadow: 0 2px 8px #ccc; }
+        h1 { text-align: center; }
+        label { display: block; margin-top: 15px; }
+        input[type="number"], input[type="text"] { width: 100%; padding: 8px; margin-top: 5px; border-radius: 5px; border: 1px solid #ccc; }
+        button { margin-top: 20px; width: 100%; padding: 10px; background: #0078d7; color: #fff; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; }
+        button:hover { background: #005fa3; }
+        .result, .plans, .ai-plan { margin-top: 25px; }
+        .plan-block { background: #e9f5ff; padding: 15px; border-radius: 7px; margin-bottom: 10px; }
+        .ai-plan { background: #fffbe6; padding: 15px; border-radius: 7px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>BMI 與跑步機訓練計畫</h1>
+    <label>身高 (公分)
+        <input type="number" id="height" min="100" max="250" required>
+        <button type="button" onclick="startVoice('height')" style="width:auto;padding:5px 10px;margin-left:5px;">🎤語音</button>
+    </label>
+    <label>體重 (公斤)
+        <input type="number" id="weight" min="30" max="200" required>
+        <button type="button" onclick="startVoice('weight')" style="width:auto;padding:5px 10px;margin-left:5px;">🎤語音</button>
+    </label>
+    <button onclick="calculateBMI()">計算 BMI 並產生訓練計畫</button>
+    <div class="result" id="bmiResult"></div>
+    <div class="plans" id="plans"></div>
+    <hr>
+    <h2>傳送訓練方案到 Arduino Uno</h2>
+    <form id="planForm" style="margin-bottom:10px;">
+        <label><input type="radio" name="plan" value="A" checked> 方案A（初階）</label>
+        <label><input type="radio" name="plan" value="B"> 方案B（中階）</label>
+        <label><input type="radio" name="plan" value="C"> 方案C（高階）</label>
+        <button type="button" onclick="submitPlan()">送出選定方案到 Arduino</button>
+    </form>
+    <div id="arduinoStatus" style="color:#0078d7;"></div>
+</div>
+<script>
+// 送出選定方案
+function submitPlan() {
+    const plan = document.querySelector('input[name="plan"]:checked').value;
+    sendPlanToArduino(plan);
+}
+// 傳送方案到 Arduino Uno
+async function sendPlanToArduino(plan) {
+    if (!('serial' in navigator)) {
+        alert('請用支援 Web Serial API 的 Chrome 瀏覽器');
+        return;
+    }
+    document.getElementById('arduinoStatus').innerText = '請選擇 Arduino 序列埠...';
+    try {
+        const port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 9600 });
+        const writer = port.writable.getWriter();
+        await writer.write(new TextEncoder().encode(plan));
+        writer.releaseLock();
+        await port.close();
+        document.getElementById('arduinoStatus').innerText = `已傳送方案${plan}到 Arduino！`;
+    } catch (e) {
+        document.getElementById('arduinoStatus').innerText = '傳送失敗，請確認已連接 Arduino 並使用 Chrome。';
+    }
+}
+// 語音輸入功能
+function startVoice(field) {
+    if (!('webkitSpeechRecognition' in window)) {
+        alert('此瀏覽器不支援語音辨識，請用 Chrome 測試');
+        return;
+    }
+    const recognition = new webkitSpeechRecognition();
+    recognition.lang = 'zh-TW';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = function(event) {
+        let result = event.results[0][0].transcript.replace(/[^\d.]/g, '');
+        if (result) {
+            document.getElementById(field).value = result;
+        } else {
+            alert('未辨識到數字，請再試一次');
+        }
+    };
+    recognition.onerror = function(event) {
+        alert('語音辨識錯誤: ' + event.error);
+    };
+    recognition.start();
+}
+function calculateBMI() {
+    const h = parseFloat(document.getElementById('height').value);
+    const w = parseFloat(document.getElementById('weight').value);
+    if (!h || !w) {
+        document.getElementById('bmiResult').innerHTML = '<span style="color:red">請輸入正確的身高與體重</span>';
+        document.getElementById('plans').innerHTML = '';
+        return;
+    }
+    const bmi = w / Math.pow(h/100, 2);
+    let status = '';
+    let plans = [];
+    // 細分速度、坡度、時間
+    // 身高>180cm速度+0.5，<160cm速度-0.5
+    // 體重>90kg初階時間-5分，<60kg初階時間+5分
+    let speedAdj = 0;
+    if (h > 180) speedAdj = 0.5;
+    else if (h < 160) speedAdj = -0.5;
+    let timeAdj = 0;
+    if (w > 90) timeAdj = -5;
+    else if (w < 60) timeAdj = 5;
+    function s(base) { return (parseFloat(base) + speedAdj).toFixed(1); }
+    function t(base) { return base + timeAdj; }
+    if (bmi < 18.5) {
+        status = '體重過輕';
+        plans = [
+            { level: '初階', speed: `${s(4)}~${s(5)} km/h`, incline: '0~1%', desc: `以平地快走為主，避免劇烈運動，建議每次 ${t(15)}~${t(20)} 分鐘。` },
+            { level: '中階', speed: `${s(5.5)}~${s(6.5)} km/h`, incline: '1~2%', desc: `可嘗試慢跑，重點在於提升體力，建議每次 ${t(20)}~${t(30)} 分鐘。` },
+            { level: '高階', speed: `${s(7)}~${s(8)} km/h`, incline: '2~3%', desc: `有運動習慣者可嘗試短時間間歇跑，建議每次 ${t(20)}~${t(30)} 分鐘。` }
+        ];
+    } else if (bmi < 24) {
+        status = '正常';
+        plans = [
+            { level: '初階', speed: `${s(5)}~${s(6)} km/h`, incline: '1~2%', desc: `快走或慢跑，建立運動習慣，建議每次 ${t(20)}~${t(30)} 分鐘。` },
+            { level: '中階', speed: `${s(7)}~${s(8.5)} km/h`, incline: '2~4%', desc: `間歇跑步，提升心肺功能，建議每次 ${t(30)}~${t(40)} 分鐘。` },
+            { level: '高階', speed: `${s(9)}~${s(12)} km/h`, incline: '4~6%', desc: `高強度間歇或坡度訓練，建議每次 ${t(40)} 分鐘以上。` }
+        ];
+    } else if (bmi < 27) {
+        status = '過重';
+        plans = [
+            { level: '初階', speed: `${s(4.5)}~${s(5.5)} km/h`, incline: '0~1%', desc: `以平地快走為主，減少膝蓋負擔，建議每次 ${t(20)}~${t(30)} 分鐘。` },
+            { level: '中階', speed: `${s(6)}~${s(7)} km/h`, incline: '1~2%', desc: `快走與慢跑交替，建議每次 ${t(25)}~${t(35)} 分鐘。` },
+            { level: '高階', speed: `${s(7.5)}~${s(9)} km/h`, incline: '2~3%', desc: `短時間慢跑與坡度快走間歇，建議每次 ${t(30)}~${t(40)} 分鐘。` }
+        ];
+    } else {
+        status = '肥胖';
+        plans = [
+            { level: '初階', speed: `${s(4)}~${s(5)} km/h`, incline: '0%', desc: `平地慢走，重點在於安全，建議每次 ${t(10)}~${t(20)} 分鐘。` },
+            { level: '中階', speed: `${s(5)}~${s(6)} km/h`, incline: '0~1%', desc: `快走為主，避免跑步，建議每次 ${t(20)}~${t(30)} 分鐘。` },
+            { level: '高階', speed: `${s(6)}~${s(7)} km/h`, incline: '1~2%', desc: `快走與短時間慢跑交替，建議每次 ${t(20)}~${t(30)} 分鐘。` }
+        ];
+    }
+    document.getElementById('bmiResult').innerHTML = `你的 BMI：<b>${bmi.toFixed(1)}</b>（${status}）`;
+    let html = '';
+    plans.forEach(p => {
+        html += `<div class="plan-block"><b>${p.level}</b><br>速度：${p.speed}<br>坡度：${p.incline}<br>${p.desc}</div>`;
+    });
+    document.getElementById('plans').innerHTML = html;
+}
+
+async function generateAIPlan() {
+    const h = document.getElementById('height').value;
+    const w = document.getElementById('weight').value;
+    // 將你的 Gemini API Key 寫在這裡
+    const apiKey = 'AIzaSyD-oI5kU6_DLS0lm9si55T1QIwiArLa1JQ'; // <--- 請改成你的金鑰
+    if (!h || !w) {
+        document.getElementById('aiPlan').innerHTML = '<span style="color:red">請先輸入身高、體重</span>';
+        return;
+    }
+    document.getElementById('aiPlan').innerHTML = 'AI 產生中...';
+    const prompt = `請根據身高${h}公分、體重${w}公斤，產生三種不同強度的跑步機訓練計畫（包含速度、坡度、時間），並簡要說明每種強度適合的人。請用繁體中文回答。`;
+    try {
+        const res = await fetch('http://localhost:3000/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey, prompt })
+        });
+        const data = await res.json();
+        if (data.candidates && data.candidates[0].content && data.candidates[0].content.parts) {
+            document.getElementById('aiPlan').innerHTML = data.candidates[0].content.parts.map(p => p.text).join('<br>');
+        } else {
+            document.getElementById('aiPlan').innerHTML = '<span style="color:red">AI 回應失敗，請檢查 API Key 或稍後再試</span>';
+        }
+    } catch (e) {
+        document.getElementById('aiPlan').innerHTML = '<span style="color:red">AI 請求失敗，請檢查網路或 API Key</span>';
+    }
+}
+</script>
+
+</body>
+</html>
